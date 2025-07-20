@@ -17,7 +17,6 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_common.h>
-#include <rte_ring.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -26,37 +25,7 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
-/* Ring queue configurations */
-#define RING_SIZE 2048
-#define MAX_RINGS 16
-
-/* Ring names */
-#define RX_RING_NAME "rx_ring_%u"
-#define PROCESS_RING_NAME "process_ring_%u"
-#define TX_RING_NAME "tx_ring_%u"
-
-/* Global ring pointers */
-static struct rte_ring *rx_rings[RTE_MAX_ETHPORTS];
-static struct rte_ring *process_rings[RTE_MAX_ETHPORTS];
-static struct rte_ring *tx_rings[RTE_MAX_ETHPORTS];
-
-/* Global control variable */
-static volatile bool force_quit = false;
-
-/* Port assignment for workers */
-static uint16_t worker_ports[RTE_MAX_ETHPORTS];
-
-/* Statistics structure */
-struct ring_stats {
-	uint64_t rx_pkts;
-	uint64_t tx_pkts;
-	uint64_t dropped_pkts;
-	uint64_t process_pkts;
-};
-
-static struct ring_stats port_stats[RTE_MAX_ETHPORTS];
-
-/* basicfwd.c: Basic DPDK skeleton forwarding example with Ring queues. */
+/* basicfwd.c: Basic DPDK skeleton forwarding example. */
 
 /*
  * Initializes a given port using global settings and with the RX buffers
@@ -285,216 +254,6 @@ print_packet_info(struct rte_mbuf *pkt, uint16_t port_id)
 }
 
 /*
- * Initialize ring queues for a given port
- */
-static int
-init_rings(uint16_t port)
-{
-	char ring_name[RTE_RING_NAMESIZE];
-
-	/* Create RX ring */
-	snprintf(ring_name, sizeof(ring_name), RX_RING_NAME, port);
-	rx_rings[port] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-		RING_F_SP_ENQ | RING_F_SC_DEQ);
-	if (rx_rings[port] == NULL) {
-		printf("Cannot create RX ring for port %u\n", port);
-		return -1;
-	}
-
-	/* Create processing ring */
-	snprintf(ring_name, sizeof(ring_name), PROCESS_RING_NAME, port);
-	process_rings[port] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-		RING_F_SP_ENQ | RING_F_SC_DEQ);
-	if (process_rings[port] == NULL) {
-		printf("Cannot create process ring for port %u\n", port);
-		return -1;
-	}
-
-	/* Create TX ring */
-	snprintf(ring_name, sizeof(ring_name), TX_RING_NAME, port);
-	tx_rings[port] = rte_ring_create(ring_name, RING_SIZE, rte_socket_id(),
-		RING_F_SP_ENQ | RING_F_SC_DEQ);
-	if (tx_rings[port] == NULL) {
-		printf("Cannot create TX ring for port %u\n", port);
-		return -1;
-	}
-
-	printf("Created rings for port %u: RX=%p, Process=%p, TX=%p\n",
-		port, rx_rings[port], process_rings[port], tx_rings[port]);
-
-	return 0;
-}
-
-/*
- * RX worker function - receives packets and enqueues them to RX ring
- */
-static int
-rx_worker(void *arg)
-{
-	uint16_t port = *(uint16_t*)arg;
-	struct rte_mbuf *bufs[BURST_SIZE];
-	uint16_t nb_rx, nb_enq;
-
-	printf("RX worker started for port %u on lcore %u\n", port, rte_lcore_id());
-
-	while (!force_quit) {
-		/* Receive packets from the port */
-		nb_rx = rte_eth_rx_burst(port, 0, bufs, BURST_SIZE);
-		if (likely(nb_rx > 0)) {
-			/* Enqueue packets to RX ring */
-			nb_enq = rte_ring_enqueue_burst(rx_rings[port], (void**)bufs, nb_rx, NULL);
-
-			/* Update statistics */
-			port_stats[port].rx_pkts += nb_enq;
-
-			/* Free packets that couldn't be enqueued */
-			if (unlikely(nb_enq < nb_rx)) {
-				port_stats[port].dropped_pkts += (nb_rx - nb_enq);
-				for (uint16_t i = nb_enq; i < nb_rx; i++) {
-					rte_pktmbuf_free(bufs[i]);
-				}
-			}
-		}
-	}
-
-	return 0;
-}
-
-/*
- * Process worker function - dequeues from RX ring, processes packets, enqueues to process ring
- */
-static int
-process_worker(void *arg)
-{
-	uint16_t port = *(uint16_t*)arg;
-	struct rte_mbuf *bufs[BURST_SIZE];
-	uint16_t nb_deq, nb_enq;
-
-	printf("Process worker started for port %u on lcore %u\n", port, rte_lcore_id());
-
-	while (!force_quit) {
-		/* Dequeue packets from RX ring */
-		nb_deq = rte_ring_dequeue_burst(rx_rings[port], (void**)bufs, BURST_SIZE, NULL);
-
-		if (likely(nb_deq > 0)) {
-			/* Process each packet */
-			for (uint16_t i = 0; i < nb_deq; i++) {
-				/* Print packet information */
-				print_packet_info(bufs[i], port);
-
-				/* Simple packet modification - swap MAC addresses for forwarding */
-				struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(bufs[i], struct rte_ether_hdr *);
-				struct rte_ether_addr tmp_addr;
-				rte_ether_addr_copy(&eth_hdr->src_addr, &tmp_addr);
-				rte_ether_addr_copy(&eth_hdr->dst_addr, &eth_hdr->src_addr);
-				rte_ether_addr_copy(&tmp_addr, &eth_hdr->dst_addr);
-			}
-
-			/* Enqueue processed packets to process ring */
-			nb_enq = rte_ring_enqueue_burst(process_rings[port], (void**)bufs, nb_deq, NULL);
-
-			/* Update statistics */
-			port_stats[port].process_pkts += nb_enq;
-
-			/* Free packets that couldn't be enqueued */
-			if (unlikely(nb_enq < nb_deq)) {
-				port_stats[port].dropped_pkts += (nb_deq - nb_enq);
-				for (uint16_t i = nb_enq; i < nb_deq; i++) {
-					rte_pktmbuf_free(bufs[i]);
-				}
-			}
-		}
-	}
-
-	return 0;
-}
-
-/*
- * TX worker function - dequeues from process ring and transmits packets
- */
-static int
-tx_worker(void *arg)
-{
-	uint16_t port = *(uint16_t*)arg;
-	struct rte_mbuf *bufs[BURST_SIZE];
-	uint16_t nb_deq, nb_tx;
-	uint16_t dst_port;
-
-	printf("TX worker started for port %u on lcore %u\n", port, rte_lcore_id());
-
-	while (!force_quit) {
-		/* Dequeue packets from process ring */
-		nb_deq = rte_ring_dequeue_burst(process_rings[port], (void**)bufs, BURST_SIZE, NULL);
-
-		if (likely(nb_deq > 0)) {
-			/* Determine destination port (simple forwarding: 0->1, 1->0, etc.) */
-			dst_port = port ^ 1;
-
-			/* Check if destination port is valid */
-			if (rte_eth_dev_is_valid_port(dst_port)) {
-				/* Transmit packets */
-				nb_tx = rte_eth_tx_burst(dst_port, 0, bufs, nb_deq);
-
-				/* Update statistics */
-				port_stats[port].tx_pkts += nb_tx;
-
-				/* Free packets that couldn't be transmitted */
-				if (unlikely(nb_tx < nb_deq)) {
-					port_stats[port].dropped_pkts += (nb_deq - nb_tx);
-					for (uint16_t i = nb_tx; i < nb_deq; i++) {
-						rte_pktmbuf_free(bufs[i]);
-					}
-				}
-			} else {
-				/* No valid destination port, just free the packets */
-				port_stats[port].dropped_pkts += nb_deq;
-				for (uint16_t i = 0; i < nb_deq; i++) {
-					rte_pktmbuf_free(bufs[i]);
-				}
-			}
-		}
-	}
-
-	return 0;
-}
-
-/*
- * Statistics display function
- */
-static void
-print_stats(void)
-{
-	uint16_t port;
-
-	printf("\n=== Ring Queue Statistics ===\n");
-	RTE_ETH_FOREACH_DEV(port) {
-		printf("Port %u: RX=%lu, Process=%lu, TX=%lu, Dropped=%lu\n",
-			port,
-			port_stats[port].rx_pkts,
-			port_stats[port].process_pkts,
-			port_stats[port].tx_pkts,
-			port_stats[port].dropped_pkts);
-
-		if (rx_rings[port]) {
-			printf("  RX Ring: Used=%u, Free=%u\n",
-				rte_ring_count(rx_rings[port]),
-				rte_ring_free_count(rx_rings[port]));
-		}
-		if (process_rings[port]) {
-			printf("  Process Ring: Used=%u, Free=%u\n",
-				rte_ring_count(process_rings[port]),
-				rte_ring_free_count(process_rings[port]));
-		}
-		if (tx_rings[port]) {
-			printf("  TX Ring: Used=%u, Free=%u\n",
-				rte_ring_count(tx_rings[port]),
-				rte_ring_free_count(tx_rings[port]));
-		}
-	}
-	printf("=============================\n");
-}
-
-/*
  * The lcore main. This is the main thread that does the work, reading from
  * an input port and writing to an output port.
  */
@@ -541,7 +300,7 @@ lcore_main(void)
 					rte_lcore_id(), nb_rx, port);
 
 			/* Analyze each received packet */
-		 for (uint16_t i = 0; i < nb_rx; i++) {
+			for (uint16_t i = 0; i < nb_rx; i++) {
 				print_packet_info(bufs[i], port);
 			}
 
@@ -571,108 +330,47 @@ main(int argc, char *argv[])
 	struct rte_mempool *mbuf_pool;
 	unsigned nb_ports;
 	uint16_t portid;
-	unsigned lcore_id;
-	uint16_t port_count = 0;
 
-	/* Initialize the Environment Abstraction Layer (EAL). */
+	/* Initializion the Environment Abstraction Layer (EAL). 8< */
 	int ret = rte_eal_init(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+	/* >8 End of initialization the Environment Abstraction Layer (EAL). */
 
 	argc -= ret;
 	argv += ret;
 
-	/* Check available ports */
+	/* Check that there is an even number of ports to send/receive on. */
 	nb_ports = rte_eth_dev_count_avail();
-	if (nb_ports == 0)
-		rte_exit(EXIT_FAILURE, "No Ethernet ports available\n");
+	//if (nb_ports < 2 || (nb_ports & 1))
+	//	rte_exit(EXIT_FAILURE, "Error: number of ports must be even\n");
 
-	printf("Found %u Ethernet ports\n", nb_ports);
+	/* Creates a new mempool in memory to hold the mbufs. */
 
-	/* Create mempool to hold the mbufs */
+	/* Allocates mempool to hold the mbufs. 8< */
 	mbuf_pool = rte_pktmbuf_pool_create("MBUF_POOL", NUM_MBUFS * nb_ports,
 		MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	/* >8 End of allocating mempool to hold mbuf. */
 
 	if (mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
-	/* Initialize all ports and rings */
-	RTE_ETH_FOREACH_DEV(portid) {
+	/* Initializing all ports. 8< */
+	RTE_ETH_FOREACH_DEV(portid)
 		if (port_init(portid, mbuf_pool) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n", portid);
+			rte_exit(EXIT_FAILURE, "Cannot init port %"PRIu16 "\n",
+					portid);
+	/* >8 End of initializing all ports. */
 
-		if (init_rings(portid) != 0)
-			rte_exit(EXIT_FAILURE, "Cannot init rings for port %"PRIu16 "\n", portid);
+	if (rte_lcore_count() > 1)
+		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
 
-		worker_ports[port_count] = portid;
-		port_count++;
-	}
-
-	/* Check if we have enough lcores for multi-threading */
-	if (rte_lcore_count() < 4) {
-		printf("\nWARNING: Need at least 4 lcores for full ring-based processing.\n");
-		printf("Using simplified single-threaded mode.\n");
-		lcore_main();
-	} else {
-		printf("\nUsing multi-threaded ring-based processing with %u lcores\n", rte_lcore_count());
-
-		/* Launch workers on different lcores */
-		lcore_id = rte_get_next_lcore(-1, 1, 0);
-		if (port_count > 0 && lcore_id != RTE_MAX_LCORE) {
-			printf("Launching RX worker for port %u on lcore %u\n", worker_ports[0], lcore_id);
-			rte_eal_remote_launch(rx_worker, &worker_ports[0], lcore_id);
-		}
-
-		lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
-		if (port_count > 0 && lcore_id != RTE_MAX_LCORE) {
-			printf("Launching Process worker for port %u on lcore %u\n", worker_ports[0], lcore_id);
-			rte_eal_remote_launch(process_worker, &worker_ports[0], lcore_id);
-		}
-
-		lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
-		if (port_count > 0 && lcore_id != RTE_MAX_LCORE) {
-			printf("Launching TX worker for port %u on lcore %u\n", worker_ports[0], lcore_id);
-			rte_eal_remote_launch(tx_worker, &worker_ports[0], lcore_id);
-		}
-
-		/* Main core handles statistics display */
-		printf("Main core %u handling statistics display\n", rte_lcore_id());
-
-		/* Statistics display loop */
-		uint64_t timer = 0;
-		while (!force_quit) {
-			rte_delay_ms(1000); /* Sleep for 1 second */
-			timer++;
-
-			if (timer % 10 == 0) { /* Print stats every 10 seconds */
-				print_stats();
-			}
-		}
-
-		/* Wait for all worker lcores to finish */
-		RTE_LCORE_FOREACH_WORKER(lcore_id) {
-			if (rte_eal_wait_lcore(lcore_id) < 0)
-				return -1;
-		}
-	}
-
-	/* Cleanup */
-	printf("\nCleaning up...\n");
-
-	/* Free rings */
-	RTE_ETH_FOREACH_DEV(portid) {
-		if (rx_rings[portid]) {
-			rte_ring_free(rx_rings[portid]);
-		}
-		if (process_rings[portid]) {
-			rte_ring_free(process_rings[portid]);
-		}
-		if (tx_rings[portid]) {
-			rte_ring_free(tx_rings[portid]);
-		}
-	}
+	/* Call lcore_main on the main core only. Called on single lcore. 8< */
+	lcore_main();
+	/* >8 End of called on single lcore. */
 
 	/* clean up the EAL */
 	rte_eal_cleanup();
+
 	return 0;
 }
