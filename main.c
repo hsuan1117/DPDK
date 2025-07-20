@@ -152,7 +152,7 @@ lcore_hello(__rte_unused void *arg)
 
 /* Initialization of Environment Abstraction Layer (EAL). 8< */
 int
-main(int argc, char **argv)
+main(int argc, char *argv[])
 {
 	int ret;
 	unsigned lcore_id; 
@@ -167,6 +167,8 @@ main(int argc, char **argv)
 
 	argc -= ret;
 	argv += ret;
+
+	nb_ports = rte_eth_dev_count_avail();
 
 	/* Creates a new mempool in memory to hold the mbufs. */
 	/* Allocates mempool to hold the mbufs. 8< */
