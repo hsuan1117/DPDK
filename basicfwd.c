@@ -17,6 +17,7 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_common.h>
+#include <rte_ring.h>
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
@@ -24,7 +25,9 @@
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
+#define RING_SIZE 1024
 
+struct rte_ring *g_ring = NULL;
 /* basicfwd.c: Basic DPDK skeleton forwarding example. */
 
 /*
@@ -260,7 +263,7 @@ print_packet_info(struct rte_mbuf *pkt, uint16_t port_id)
 
  /* Basic forwarding application lcore. 8< */
 static __rte_noreturn void
-lcore_main(void)
+rx_lcore_main(void)
 {
 	uint16_t port;
 
@@ -355,6 +358,7 @@ main(int argc, char *argv[])
 	if (mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
+
 	/* Initializing all ports. 8< */
 	RTE_ETH_FOREACH_DEV(portid)
 		if (port_init(portid, mbuf_pool) != 0)
@@ -362,12 +366,14 @@ main(int argc, char *argv[])
 					portid);
 	/* >8 End of initializing all ports. */
 
-	if (rte_lcore_count() > 1)
-		printf("\nWARNING: Too many lcores enabled. Only 1 used.\n");
+	// 初始化 DPDK ring
+	g_ring = rte_ring_create("mbuf_ring", RING_SIZE, rte_socket_id(), RING_F_SC_DEQ);
+	if (g_ring == NULL)
+		rte_exit(EXIT_FAILURE, "Cannot create ring\n");
 
-	/* Call lcore_main on the main core only. Called on single lcore. 8< */
-	lcore_main();
-	/* >8 End of called on single lcore. */
+	rte_eal_remote_launch(rx_lcore_main, NULL, 0);
+
+	rte_eal_mp_wait_lcore();			
 
 	/* clean up the EAL */
 	rte_eal_cleanup();
