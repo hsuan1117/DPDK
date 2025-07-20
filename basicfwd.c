@@ -262,7 +262,7 @@ print_packet_info(struct rte_mbuf *pkt, uint16_t port_id)
  */
 
  /* Basic forwarding application lcore. 8< */
-static __rte_noreturn void
+static int
 rx_lcore_main(void)
 {
 	uint16_t port;
@@ -319,6 +319,7 @@ rx_lcore_main(void)
 			}
 		}
 	}
+	return 0;
 	/* >8 End of loop. */
 }
 /* >8 End Basic forwarding application lcore. */
