@@ -119,10 +119,6 @@ lcore_hello(__rte_unused void *arg)
 			rte_lcore_id());
 
     for (;;) {
-		/*
-		 * Receive packets on a port and forward them on the paired
-		 * port. The mapping is 0 -> 1, 1 -> 0, 2 -> 3, 3 -> 2, etc.
-		 */
 		RTE_ETH_FOREACH_DEV(port) {
 
 			/* Get burst of RX packets, from first port of pair. */
@@ -134,8 +130,9 @@ lcore_hello(__rte_unused void *arg)
 				continue;
 
 			/* Send burst of TX packets, to second port of pair. */
-			const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0,
-					bufs, nb_rx);
+			// const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0,
+			// 		bufs, nb_rx);
+            const uint16_t nb_tx = 0; // No forwarding in this example
 
 			/* Free any unsent packets. */
 			if (unlikely(nb_tx < nb_rx)) {
