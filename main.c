@@ -22,16 +22,22 @@
 
 #define RX_RING_SIZE 1024
 #define TX_RING_SIZE 1024
+#define RING_SIZE 1024
 
 #define NUM_MBUFS 8191
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
+// 共用 ring
+static const char *_SEC_2_PRI = "SEC_2_PRI";
+struct rte_ring *recv_ring;
+
+
 /*
  * Function to analyze and print packet information
  */
 static void
-print_packet_info(struct rte_mbuf *pkt, uint16_t port_id)
+print_packet_info(struct rte_mbuf *pkt)
 {
 	struct rte_ether_hdr *eth_hdr;
 	struct rte_ipv4_hdr *ipv4_hdr;
@@ -49,7 +55,7 @@ print_packet_info(struct rte_mbuf *pkt, uint16_t port_id)
 
 	// Print basic packet info
 	printf("=== Packet Info [%s.%06ld] ===\n", time_str, tv.tv_usec);
-	printf("Port: %u, Packet Length: %u bytes\n", port_id, rte_pktmbuf_pkt_len(pkt));
+	printf("Packet Length: %u bytes\n", rte_pktmbuf_pkt_len(pkt));
 	printf("Data Length: %u, Headroom: %u, Tailroom: %u\n", 
 		   rte_pktmbuf_data_len(pkt), rte_pktmbuf_headroom(pkt), rte_pktmbuf_tailroom(pkt));
 
@@ -249,9 +255,30 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 }
 /* >8 End of main functional part of port initialization. */
 
+
+/* worker */
+static int
+lcore_worker(__rte_unused void *arg)
+{
+	unsigned lcore_id = rte_lcore_id();
+
+	printf("Starting core %u running worker\n", lcore_id);
+	while (!quit){
+		void *bufs;
+		if (rte_ring_dequeue(recv_ring, &bufs) < 0){
+			usleep(5);
+			continue;
+		}
+		printf("core %u: Received pkt\n", lcore_id);
+        print_packet_info((struct rte_mbuf *)bufs);
+	}
+
+	return 0;
+}
+
 /* Launch a function on lcore. 8< */
 static int
-lcore_hello(__rte_unused void *arg)
+lcore_port(__rte_unused void *arg)
 {
     uint16_t port;
 
@@ -278,7 +305,11 @@ lcore_hello(__rte_unused void *arg)
             const uint16_t nb_tx = 0; // No forwarding in this example
 
             for (uint16_t i = 0; i < nb_rx; i++) {
-				print_packet_info(bufs[i], port);
+                // print_packet_info(bufs[i], port);
+                if (rte_ring_enqueue(send_ring, bufs[i]) < 0) {
+                    printf("Failed to save pkt\n");
+                    // rte_mempool_put(message_pool, msg);
+                }
 			}
 
 			/* Free any unsent packets. */
@@ -303,6 +334,8 @@ main(int argc, char *argv[])
 	struct rte_mempool *mbuf_pool;
 	unsigned nb_ports;
 	uint16_t portid;
+    const unsigned ring_flags = 0;
+
 
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
@@ -311,6 +344,14 @@ main(int argc, char *argv[])
 
 	argc -= ret;
 	argv += ret;
+
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY){
+		recv_ring = rte_ring_create(_SEC_2_PRI, ring_size, rte_socket_id(), ring_flags);
+	} else {
+        recv_ring = rte_ring_lookup(_SEC_2_PRI);
+    }
+    if (recv_ring == NULL)
+		rte_exit(EXIT_FAILURE, "Problem getting receiving ring\n");
 
 	nb_ports = rte_eth_dev_count_avail();
 
@@ -332,15 +373,34 @@ main(int argc, char *argv[])
     }
 	/* >8 End of initializing all ports. */
 
+    unsigned int i = 0;
+    unsigned int count = 0;
+
+    // 先計算總共有幾個 worker core
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+        count++;
+    }
+
+    printf("Total worker cores: %u\n", count);
+
+    i = 0;
+    RTE_LCORE_FOREACH_WORKER(lcore_id) {
+        if (i < count / 2)
+            rte_eal_remote_launch(lcore_worker, NULL, lcore_id);
+        else
+            rte_eal_remote_launch(lcore_port, NULL, lcore_id);
+        i++;
+    }
+
 	/* Launches the function on each lcore. 8< */
-	RTE_LCORE_FOREACH_WORKER(lcore_id) {
-		/* Simpler equivalent. 8< */
-		rte_eal_remote_launch(lcore_hello, NULL, lcore_id);
-		/* >8 End of simpler equivalent. */
-	}
+	// RTE_LCORE_FOREACH_WORKER(lcore_id) {
+	// 	/* Simpler equivalent. 8< */
+	// 	rte_eal_remote_launch(lcore_port, NULL, lcore_id);
+	// 	/* >8 End of simpler equivalent. */
+	// }
 
 	/* call it on main lcore too */
-	lcore_hello(NULL);
+	// lcore_hello(NULL);
 	/* >8 End of launching the function on each lcore. */
 
 	rte_eal_mp_wait_lcore();
