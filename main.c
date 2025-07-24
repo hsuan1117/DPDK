@@ -150,13 +150,13 @@ print_packet_info(struct rte_mbuf *pkt)
 				   icmp_hdr->icmp_type, icmp_hdr->icmp_code,
 				   rte_be_to_cpu_16(icmp_hdr->icmp_cksum));
 
-			if (icmp_hdr->icmp_type == RTE_ICMP_ECHO_REQUEST) {
+			if (icmp_hdr->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) {
 				printf("ICMP - Echo Request ID: %u, Seq: %u\n",
-					   rte_be_to_cpu_16(icmp_hdr->icmp_id),
+					   rte_be_to_cpu_16(icmp_hdr->icmp_ident),
 					   rte_be_to_cpu_16(icmp_hdr->icmp_seq_nb));
-			} else if (icmp_hdr->icmp_type == RTE_ICMP_ECHO_REPLY) {
+			} else if (icmp_hdr->icmp_type == RTE_IP_ICMP_ECHO_REPLY) {
 				printf("ICMP - Echo Reply ID: %u, Seq: %u\n",
-					   rte_be_to_cpu_16(icmp_hdr->icmp_id),
+					   rte_be_to_cpu_16(icmp_hdr->icmp_ident),
 					   rte_be_to_cpu_16(icmp_hdr->icmp_seq_nb));
 			}
 		}
