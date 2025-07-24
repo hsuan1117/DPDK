@@ -43,6 +43,7 @@ print_packet_info(struct rte_mbuf *pkt)
 	struct rte_ipv4_hdr *ipv4_hdr;
 	struct rte_tcp_hdr *tcp_hdr;
 	struct rte_udp_hdr *udp_hdr;
+	struct rte_icmp_hdr *icmp_hdr;
 	struct timeval tv;
 	char time_str[64];
 	uint16_t ether_type;
@@ -139,6 +140,25 @@ print_packet_info(struct rte_mbuf *pkt)
 				   rte_be_to_cpu_16(udp_hdr->src_port),
 				   rte_be_to_cpu_16(udp_hdr->dst_port),
 				   rte_be_to_cpu_16(udp_hdr->dgram_len));
+		}
+		else if(ip_protocol == IPPROTO_ICMP) {
+			printf(" (ICMP)\n");
+			
+			icmp_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_icmp_hdr *, 
+				sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+			printf("ICMP - Type: %u, Code: %u, Checksum: 0x%04x\n",
+				   icmp_hdr->icmp_type, icmp_hdr->icmp_code,
+				   rte_be_to_cpu_16(icmp_hdr->icmp_cksum));
+
+			if (icmp_hdr->icmp_type == RTE_ICMP_ECHO_REQUEST) {
+				printf("ICMP - Echo Request ID: %u, Seq: %u\n",
+					   rte_be_to_cpu_16(icmp_hdr->icmp_id),
+					   rte_be_to_cpu_16(icmp_hdr->icmp_seq));
+			} else if (icmp_hdr->icmp_type == RTE_ICMP_ECHO_REPLY) {
+				printf("ICMP - Echo Reply ID: %u, Seq: %u\n",
+					   rte_be_to_cpu_16(icmp_hdr->icmp_id),
+					   rte_be_to_cpu_16(icmp_hdr->icmp_seq));
+			}
 		}
 		else {
 			printf(" (Other)\n");
