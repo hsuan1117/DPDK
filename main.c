@@ -27,6 +27,146 @@
 #define MBUF_CACHE_SIZE 250
 #define BURST_SIZE 32
 
+/*
+ * Function to analyze and print packet information
+ */
+static void
+print_packet_info(struct rte_mbuf *pkt, uint16_t port_id)
+{
+	struct rte_ether_hdr *eth_hdr;
+	struct rte_ipv4_hdr *ipv4_hdr;
+	struct rte_tcp_hdr *tcp_hdr;
+	struct rte_udp_hdr *udp_hdr;
+	struct timeval tv;
+	char time_str[64];
+	uint16_t ether_type;
+	uint8_t ip_protocol;
+
+	// Get current time
+	gettimeofday(&tv, NULL);
+	struct tm *tm_info = localtime(&tv.tv_sec);
+	strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+	// Print basic packet info
+	printf("=== Packet Info [%s.%06ld] ===\n", time_str, tv.tv_usec);
+	printf("Port: %u, Packet Length: %u bytes\n", port_id, rte_pktmbuf_pkt_len(pkt));
+	printf("Data Length: %u, Headroom: %u, Tailroom: %u\n", 
+		   rte_pktmbuf_data_len(pkt), rte_pktmbuf_headroom(pkt), rte_pktmbuf_tailroom(pkt));
+
+	// Parse Ethernet header
+	eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+	printf("Ethernet - Src MAC: %02x:%02x:%02x:%02x:%02x:%02x, "
+		   "Dst MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
+		   eth_hdr->src_addr.addr_bytes[0], eth_hdr->src_addr.addr_bytes[1],
+		   eth_hdr->src_addr.addr_bytes[2], eth_hdr->src_addr.addr_bytes[3],
+		   eth_hdr->src_addr.addr_bytes[4], eth_hdr->src_addr.addr_bytes[5],
+		   eth_hdr->dst_addr.addr_bytes[0], eth_hdr->dst_addr.addr_bytes[1],
+		   eth_hdr->dst_addr.addr_bytes[2], eth_hdr->dst_addr.addr_bytes[3],
+		   eth_hdr->dst_addr.addr_bytes[4], eth_hdr->dst_addr.addr_bytes[5]);
+
+	ether_type = rte_be_to_cpu_16(eth_hdr->ether_type);
+	printf("Ethernet Type: 0x%04x", ether_type);
+
+	// Check if it's IPv4
+	if (ether_type == RTE_ETHER_TYPE_IPV4) {
+		printf(" (IPv4)\n");
+		ipv4_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+		
+		printf("IPv4 - Src IP: %u.%u.%u.%u, Dst IP: %u.%u.%u.%u\n",
+			   (rte_be_to_cpu_32(ipv4_hdr->src_addr) >> 24) & 0xFF,
+			   (rte_be_to_cpu_32(ipv4_hdr->src_addr) >> 16) & 0xFF,
+			   (rte_be_to_cpu_32(ipv4_hdr->src_addr) >> 8) & 0xFF,
+			   rte_be_to_cpu_32(ipv4_hdr->src_addr) & 0xFF,
+			   (rte_be_to_cpu_32(ipv4_hdr->dst_addr) >> 24) & 0xFF,
+			   (rte_be_to_cpu_32(ipv4_hdr->dst_addr) >> 16) & 0xFF,
+			   (rte_be_to_cpu_32(ipv4_hdr->dst_addr) >> 8) & 0xFF,
+			   rte_be_to_cpu_32(ipv4_hdr->dst_addr) & 0xFF);
+
+		printf("IPv4 - Version: %u, IHL: %u, ToS: 0x%02x, Total Length: %u\n",
+			   (ipv4_hdr->version_ihl >> 4) & 0xF,
+			   ipv4_hdr->version_ihl & 0xF,
+			   ipv4_hdr->type_of_service,
+			   rte_be_to_cpu_16(ipv4_hdr->total_length));
+
+		printf("IPv4 - ID: %u, Flags: 0x%x, Fragment Offset: %u, TTL: %u\n",
+			   rte_be_to_cpu_16(ipv4_hdr->packet_id),
+			   (rte_be_to_cpu_16(ipv4_hdr->fragment_offset) >> 13) & 0x7,
+			   rte_be_to_cpu_16(ipv4_hdr->fragment_offset) & 0x1FFF,
+			   ipv4_hdr->time_to_live);
+
+		ip_protocol = ipv4_hdr->next_proto_id;
+		printf("IPv4 - Protocol: %u", ip_protocol);
+
+		// Check for TCP
+		if (ip_protocol == IPPROTO_TCP) {
+			printf(" (TCP)\n");
+			tcp_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_tcp_hdr *, 
+				sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+			
+			printf("TCP - Src Port: %u, Dst Port: %u\n",
+				   rte_be_to_cpu_16(tcp_hdr->src_port),
+				   rte_be_to_cpu_16(tcp_hdr->dst_port));
+			
+			printf("TCP - Seq: %u, Ack: %u, Window: %u\n",
+				   rte_be_to_cpu_32(tcp_hdr->sent_seq),
+				   rte_be_to_cpu_32(tcp_hdr->recv_ack),
+				   rte_be_to_cpu_16(tcp_hdr->rx_win));
+			
+			printf("TCP - Flags: 0x%02x", tcp_hdr->tcp_flags);
+			if (tcp_hdr->tcp_flags & RTE_TCP_CWR_FLAG) printf(" CWR");
+			if (tcp_hdr->tcp_flags & RTE_TCP_ECE_FLAG) printf(" ECE");
+			if (tcp_hdr->tcp_flags & RTE_TCP_URG_FLAG) printf(" URG");
+			if (tcp_hdr->tcp_flags & RTE_TCP_ACK_FLAG) printf(" ACK");
+			if (tcp_hdr->tcp_flags & RTE_TCP_PSH_FLAG) printf(" PSH");
+			if (tcp_hdr->tcp_flags & RTE_TCP_RST_FLAG) printf(" RST");
+			if (tcp_hdr->tcp_flags & RTE_TCP_SYN_FLAG) printf(" SYN");
+			if (tcp_hdr->tcp_flags & RTE_TCP_FIN_FLAG) printf(" FIN");
+			printf("\n");
+		}
+		// Check for UDP
+		else if (ip_protocol == IPPROTO_UDP) {
+			printf(" (UDP)\n");
+			udp_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_udp_hdr *, 
+				sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+			
+			printf("UDP - Src Port: %u, Dst Port: %u, Length: %u\n",
+				   rte_be_to_cpu_16(udp_hdr->src_port),
+				   rte_be_to_cpu_16(udp_hdr->dst_port),
+				   rte_be_to_cpu_16(udp_hdr->dgram_len));
+		}
+		else {
+			printf(" (Other)\n");
+		}
+	}
+	else if (ether_type == RTE_ETHER_TYPE_ARP) {
+		printf(" (ARP)\n");
+	}
+	else {
+		printf(" (Other/Unknown)\n");
+	}
+
+	// Print raw packet data (first 64 bytes)
+	uint8_t *pkt_data = rte_pktmbuf_mtod(pkt, uint8_t *);
+	uint32_t data_len = rte_pktmbuf_pkt_len(pkt);
+	uint32_t print_len = (data_len > 64) ? 64 : data_len;
+	
+	printf("Raw Data (first %u bytes): ", print_len);
+	for (uint32_t i = 0; i < print_len; i++) {
+		printf("%02x ", pkt_data[i]);
+		if ((i + 1) % 16 == 0) printf("\n                          ");
+	}
+	printf("\n");
+
+	// Print mbuf metadata
+	printf("Mbuf Info - Pool: %p, Next: %p, Nb_segs: %u, Port: %u\n",
+		   pkt->pool, pkt->next, pkt->nb_segs, pkt->port);
+	printf("Mbuf Info - Pkt_len: %u, Data_len: %u, Refcnt: %u\n",
+		   pkt->pkt_len, pkt->data_len, rte_mbuf_refcnt_read(pkt));
+	
+	printf("=======================================\n\n");
+}
+
+
 /* Main functional part of port initialization. 8< */
 static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
@@ -136,6 +276,10 @@ lcore_hello(__rte_unused void *arg)
 			// const uint16_t nb_tx = rte_eth_tx_burst(port ^ 1, 0,
 			// 		bufs, nb_rx);
             const uint16_t nb_tx = 0; // No forwarding in this example
+
+            for (uint16_t i = 0; i < nb_rx; i++) {
+				print_packet_info(bufs[i], port);
+			}
 
 			/* Free any unsent packets. */
 			if (unlikely(nb_tx < nb_rx)) {
