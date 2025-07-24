@@ -172,6 +172,13 @@ print_packet_info(struct rte_mbuf *pkt)
 	printf("=======================================\n\n");
 }
 
+/* Check if pkt is broadcast */
+static inline bool is_broadcast(struct rte_mbuf *pkt)
+{
+	struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt, struct rte_ether_hdr *);
+	return rte_is_broadcast_ether_addr(&eth_hdr->dst_addr);
+}
+
 
 /* Main functional part of port initialization. 8< */
 static inline int
@@ -307,10 +314,15 @@ lcore_port(__rte_unused void *arg)
 
             for (uint16_t i = 0; i < nb_rx; i++) {
                 // print_packet_info(bufs[i], port);
-                if (rte_ring_enqueue(recv_ring, bufs[i]) < 0) {
-                    printf("Failed to save pkt\n");
-                    // rte_mempool_put(message_pool, msg);
-                }
+				if(!is_broadcast(bufs[i])) {
+                    if (rte_ring_enqueue(recv_ring, bufs[i]) < 0) {
+                        printf("Failed to save pkt\n");
+                        // rte_mempool_put(message_pool, msg);
+                    }
+                } else {
+					printf("Broadcast packet received, not saving to ring\n");
+					rte_pktmbuf_free(bufs[i]); // Free broadcast packets
+				}
 			}
 
 			/* Free any unsent packets. */
