@@ -255,6 +255,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 }
 /* >8 End of main functional part of port initialization. */
 
+volatile int quit = 0;
 
 /* worker */
 static int
@@ -306,7 +307,7 @@ lcore_port(__rte_unused void *arg)
 
             for (uint16_t i = 0; i < nb_rx; i++) {
                 // print_packet_info(bufs[i], port);
-                if (rte_ring_enqueue(send_ring, bufs[i]) < 0) {
+                if (rte_ring_enqueue(recv_ring, bufs[i]) < 0) {
                     printf("Failed to save pkt\n");
                     // rte_mempool_put(message_pool, msg);
                 }
@@ -346,7 +347,7 @@ main(int argc, char *argv[])
 	argv += ret;
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY){
-		recv_ring = rte_ring_create(_SEC_2_PRI, ring_size, rte_socket_id(), ring_flags);
+		recv_ring = rte_ring_create(_SEC_2_PRI, RING_SIZE, rte_socket_id(), ring_flags);
 	} else {
         recv_ring = rte_ring_lookup(_SEC_2_PRI);
     }
